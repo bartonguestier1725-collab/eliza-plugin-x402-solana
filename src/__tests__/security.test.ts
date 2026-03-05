@@ -80,6 +80,27 @@ describe("parsePrivateKey", () => {
     const result = parsePrivateKey("2");
     assert.ok(result.length > 0);
   });
+
+  it("parses 64-char hex string as 32-byte private key", () => {
+    const hex = "ab".repeat(32); // 64 hex chars = 32 bytes
+    const result = parsePrivateKey(hex);
+    assert.equal(result.length, 32);
+    assert.equal(result[0], 0xab);
+  });
+
+  it("parses 128-char hex string as 64-byte keypair", () => {
+    const hex = "cd".repeat(64); // 128 hex chars = 64 bytes
+    const result = parsePrivateKey(hex);
+    assert.equal(result.length, 64);
+    assert.equal(result[0], 0xcd);
+  });
+
+  it("parses 0x-prefixed hex string", () => {
+    const hex = "0x" + "ef".repeat(32);
+    const result = parsePrivateKey(hex);
+    assert.equal(result.length, 32);
+    assert.equal(result[0], 0xef);
+  });
 });
 
 // --- URL Validation ---

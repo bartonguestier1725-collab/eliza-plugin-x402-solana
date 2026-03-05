@@ -9,7 +9,7 @@ import { x402Client } from "@x402/fetch";
 import { wrapFetchWithPayment } from "@x402/fetch";
 import { toClientSvmSigner } from "@x402/svm";
 import { registerExactSvmScheme } from "@x402/svm/exact/client";
-import { createKeyPairSignerFromBytes } from "@solana/signers";
+import { createKeyPairSignerFromBytes, createKeyPairSignerFromPrivateKeyBytes } from "@solana/signers";
 import { createMaxPaymentPolicy } from "./security.js";
 
 /** Solana mainnet CAIP-2 identifier */
@@ -54,9 +54,22 @@ export function decodeBase58(encoded: string): Uint8Array {
 }
 
 /**
- * Parse a Solana private key from base58 string or JSON array format.
+ * Decode a hex string to Uint8Array.
+ */
+function decodeHex(hex: string): Uint8Array {
+  const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+  const bytes = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+/**
+ * Parse a Solana private key from multiple formats.
  *
  * Supports:
+ * - Hex string (64 chars = 32 bytes private key, 128 chars = 64 bytes keypair)
  * - Base58 string: standard Solana wallet format (64-byte keypair)
  * - JSON array: Solana CLI's ~/.config/solana/id.json format ([12, 34, ...])
  */
@@ -76,6 +89,12 @@ export function parsePrivateKey(input: string): Uint8Array {
     }
   }
 
+  // Hex format: 64 hex chars (32 bytes) or 128 hex chars (64 bytes)
+  const hexClean = trimmed.startsWith("0x") ? trimmed.slice(2) : trimmed;
+  if (/^[0-9a-f]+$/i.test(hexClean) && (hexClean.length === 64 || hexClean.length === 128)) {
+    return decodeHex(hexClean);
+  }
+
   // Base58 format (default)
   return decodeBase58(trimmed);
 }
@@ -91,11 +110,13 @@ export async function createSolanaX402Fetch(
   privateKeyInput: string,
   maxPaymentUsd: number = 1.0,
 ): Promise<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>> {
-  // 1. Parse private key (base58 or JSON array)
+  // 1. Parse private key (hex, base58, or JSON array)
   const keyBytes = parsePrivateKey(privateKeyInput);
 
-  // 2. Create a KeyPairSigner from the bytes
-  const signer = await createKeyPairSignerFromBytes(keyBytes);
+  // 2. Create a KeyPairSigner — 32 bytes = private key only, 64 bytes = full keypair
+  const signer = keyBytes.length === 32
+    ? await createKeyPairSignerFromPrivateKeyBytes(keyBytes)
+    : await createKeyPairSignerFromBytes(keyBytes);
 
   // 3. Convert to x402 SVM signer
   const svmSigner = toClientSvmSigner(signer);
