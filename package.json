@@ -16,12 +16,16 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "node --test dist/__tests__/*.test.js",
+    "test": "tsc && node --test dist/__tests__/*.test.js",
     "clean": "rm -rf dist node_modules"
   },
+  "engines": {
+    "node": ">=20.18.0"
+  },
+  "license": "MIT",
   "dependencies": {
     "@elizaos/core": "2.0.0-alpha.3",
-    "@solana/signers": "^2.1.0",
+    "@solana/signers": "^5.5.0",
     "@x402/core": "~2.5.0",
     "@x402/svm": "~2.5.0",
     "@x402/fetch": "~2.5.0"

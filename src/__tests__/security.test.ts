@@ -193,6 +193,14 @@ describe("createMaxPaymentPolicy", () => {
     const filtered = policy(2, requirements as never[]);
     assert.equal(filtered.length, 0);
   });
+
+  // H1 fix: Math.round prevents floating point truncation
+  it("allows $0.005 payment with maxPaymentUsd=0.005 (floating point safe)", () => {
+    const policy = createMaxPaymentPolicy(0.005); // $0.005
+    const requirements = [{ amount: "5000", scheme: "exact", network: "solana:mainnet" }]; // exactly $0.005 = 5000 base units
+    const filtered = policy(2, requirements as never[]);
+    assert.equal(filtered.length, 1, "Math.round should produce 5000, not 4999");
+  });
 });
 
 // --- Query Masking ---

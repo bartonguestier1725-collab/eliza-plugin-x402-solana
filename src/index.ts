@@ -14,7 +14,7 @@ import { configureSecurityPolicy, getMaxPaymentUsd } from "./security.js";
 
 type X402Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-/** Per-runtime x402 fetch instances (#3 fix: no more module global) */
+/** Per-runtime x402 fetch instances */
 const fetchMap = new WeakMap<IAgentRuntime, X402Fetch>();
 
 /** Get the initialized x402 fetch for a runtime. Null if not configured. */
@@ -37,6 +37,9 @@ export const x402SolanaPlugin: Plugin = {
         ? parseFloat(pluginConfig.maxPaymentUsd)
         : undefined,
       allowAnyDomain: pluginConfig.allowAnyDomain === "true",
+      fetchTimeoutMs: pluginConfig.fetchTimeoutMs
+        ? parseInt(pluginConfig.fetchTimeoutMs, 10)
+        : undefined,
     });
 
     const privateKey =

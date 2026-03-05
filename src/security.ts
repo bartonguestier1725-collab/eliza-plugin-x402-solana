@@ -36,33 +36,34 @@ const PRIVATE_IP_PATTERNS = [
   /^fd/i,
   /^fe80:/i,
   /^localhost$/i,
-  // IPv4-mapped IPv6: ::ffff:10.x, ::ffff:127.x, ::ffff:192.168.x, etc.
-  /^::ffff:(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.|0\.)/i,
 ];
 
 /** Default max payment per single request in USD. */
 const DEFAULT_MAX_PAYMENT_USD = 1.0;
 
+/** Default fetch timeout in ms. */
+export const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
+
 export interface SecurityConfig {
   allowedDomains?: string[];
   maxPaymentUsd?: number;
   allowAnyDomain?: boolean;
+  fetchTimeoutMs?: number;
 }
 
-// --- Per-runtime config storage (#3 fix) ---
+// --- Per-runtime config storage ---
 const configMap = new WeakMap<IAgentRuntime, SecurityConfig>();
-let fallbackConfig: SecurityConfig = {};
+const EMPTY_CONFIG: SecurityConfig = {};
 
 export function configureSecurityPolicy(runtime: IAgentRuntime, c: SecurityConfig): void {
   configMap.set(runtime, c);
-  fallbackConfig = c;
 }
 
 function getConfig(runtime?: IAgentRuntime): SecurityConfig {
   if (runtime) {
-    return configMap.get(runtime) ?? fallbackConfig;
+    return configMap.get(runtime) ?? EMPTY_CONFIG;
   }
-  return fallbackConfig;
+  return EMPTY_CONFIG;
 }
 
 /**
@@ -144,14 +145,19 @@ export function getMaxPaymentUsd(runtime?: IAgentRuntime): number {
   return getConfig(runtime).maxPaymentUsd ?? DEFAULT_MAX_PAYMENT_USD;
 }
 
+/** Get the fetch timeout in ms. */
+export function getFetchTimeoutMs(runtime?: IAgentRuntime): number {
+  return getConfig(runtime).fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+}
+
 /**
  * Create a PaymentPolicy that rejects payments above a USD threshold.
  * USDC has 6 decimals: $1.00 = "1000000".
- *
- * PaymentPolicy type: (x402Version: number, requirements: PaymentRequirements[]) => PaymentRequirements[]
  */
 export function createMaxPaymentPolicy(maxUsd: number): PaymentPolicy {
-  const maxBaseUnits = BigInt(Math.floor(maxUsd * 1_000_000));
+  // H1 fix: Math.round instead of Math.floor to avoid floating point truncation
+  // e.g. 0.005 * 1_000_000 = 4999.999... → Math.round = 5000 (correct)
+  const maxBaseUnits = BigInt(Math.round(maxUsd * 1_000_000));
   return (_version: number, requirements: PaymentRequirements[]): PaymentRequirements[] => {
     return requirements.filter((r) => {
       try {

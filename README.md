@@ -73,13 +73,45 @@ Fetches data from any x402-protected API with automatic Solana USDC payment.
 - `https://domain.hugen.tokyo/domain/full?domain=example.com` — Full domain intelligence ($0.01)
 - `https://intel.hugen.tokyo/intel/token-report` — AI-synthesized token DD ($0.50)
 
+## Security Configuration
+
+The plugin includes built-in security controls configurable via plugin config:
+
+```json
+{
+  "plugins": ["@hugen/plugin-x402-solana"],
+  "pluginConfig": {
+    "@hugen/plugin-x402-solana": {
+      "allowedDomains": "scout.hugen.tokyo,defi.hugen.tokyo",
+      "maxPaymentUsd": "1.00",
+      "allowAnyDomain": "false",
+      "fetchTimeoutMs": "30000"
+    }
+  }
+}
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `allowedDomains` | `*.hugen.tokyo` (9 domains) | Comma-separated domain allowlist |
+| `maxPaymentUsd` | `1.00` | Maximum USDC payment per request |
+| `allowAnyDomain` | `false` | Set `true` to disable domain allowlist |
+| `fetchTimeoutMs` | `30000` | Request timeout in milliseconds |
+
+**Security features:**
+- SSRF protection: blocks private IPs (IPv4 + IPv6 + IPv4-mapped IPv6)
+- Domain allowlist: only approved domains by default
+- Payment limit: rejects 402 requirements exceeding the USD threshold
+- Request timeout: prevents hung requests from blocking the agent
+
 ## Technical Details
 
 - Uses `@x402/svm` v2.5.0 (Coinbase official) for Solana transaction signing
 - Uses `@x402/fetch` for automatic 402 → payment → retry flow
-- Base58 key decoding is self-contained (no `bs58` dependency)
+- Base58 + JSON array key format support (no external dependency)
+- Requires Node.js 20+ (`@solana/kit` requirement)
 - Compatible with ElizaOS 2.0.0-alpha.3+
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE)

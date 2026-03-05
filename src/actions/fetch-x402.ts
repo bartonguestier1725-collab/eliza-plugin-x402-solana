@@ -4,7 +4,7 @@
  * When the agent needs data from a paid API (scout intelligence, DeFi data,
  * domain analysis, etc.), this action handles the x402 payment flow:
  * 1. Validates URL against domain allowlist and SSRF rules
- * 2. Makes the HTTP request
+ * 2. Makes the HTTP request (with timeout)
  * 3. Receives 402 Payment Required
  * 4. Signs a Solana USDC transfer (enforced by payment policy max limit)
  * 5. Retries with payment proof
@@ -21,7 +21,10 @@ import type {
   State,
 } from "@elizaos/core";
 import { getX402Fetch } from "../index.js";
-import { validateUrl, maskQueryParams } from "../security.js";
+import { validateUrl, maskQueryParams, getFetchTimeoutMs } from "../security.js";
+
+/** Max response body size (4 MB). Prevents OOM on large payloads like base64 images. */
+const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
 export const fetchX402Action: Action = {
   name: "FETCH_X402_SOLANA",
@@ -55,11 +58,11 @@ export const fetchX402Action: Action = {
       name: "method",
       description: "HTTP method. Defaults to GET.",
       required: false,
-      schema: { type: "string", enumValues: ["GET", "POST"] },
+      schema: { type: "string", enumValues: ["GET", "POST", "PUT"] },
     },
     {
       name: "body",
-      description: "JSON request body for POST requests.",
+      description: "JSON request body for POST/PUT requests.",
       required: false,
       schema: { type: "string" },
     },
@@ -115,16 +118,32 @@ export const fetchX402Action: Action = {
     const body = params?.body as string | undefined;
     const safeUrl = maskQueryParams(url);
 
+    // H2 fix: Timeout via AbortController
+    const timeoutMs = getFetchTimeoutMs(runtime);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
       console.error(`[x402-solana] ${method} ${safeUrl}`);
 
-      const init: RequestInit = { method };
+      const init: RequestInit = { method, signal: controller.signal };
       if (body && (method === "POST" || method === "PUT")) {
         init.body = body;
         init.headers = { "Content-Type": "application/json" };
       }
 
       const response = await x402Fetch(url, init);
+
+      // L3 fix: Check Content-Length before reading body
+      const contentLength = parseInt(response.headers.get("content-length") ?? "0", 10);
+      if (contentLength > MAX_RESPONSE_BYTES) {
+        console.error(`[x402-solana] Response too large: ${contentLength} bytes`);
+        if (callback) {
+          await callback({ text: `Response too large (${contentLength} bytes, max ${MAX_RESPONSE_BYTES})`, actions: [] });
+        }
+        return { success: false, error: "Response too large" };
+      }
+
       const text = await response.text();
 
       if (!response.ok) {
@@ -138,7 +157,7 @@ export const fetchX402Action: Action = {
         return { success: false, error: `HTTP ${response.status}` };
       }
 
-      // Parse as JSON — keep full structure (#5 fix: no flattening)
+      // Parse as JSON — keep full structure
       let data: Record<string, unknown> | undefined;
       try {
         const parsed = JSON.parse(text);
@@ -158,16 +177,19 @@ export const fetchX402Action: Action = {
         await callback({ text: summary, actions: [] });
       }
 
-      // Return data in ActionResult for action chaining.
-      // Cast to ProviderDataRecord — ProviderValue includes object/JsonValue.
-      return { success: true, data: data as Record<string, never> };
+      // M3 fix: proper cast via unknown to ProviderDataRecord
+      return { success: true, data: data as unknown as Record<string, never> };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[x402-solana] Error on ${safeUrl}: ${message}`);
+      const isTimeout = err instanceof DOMException && err.name === "AbortError";
+      const displayMsg = isTimeout ? `Request timed out after ${timeoutMs}ms` : message;
+      console.error(`[x402-solana] Error on ${safeUrl}: ${displayMsg}`);
       if (callback) {
-        await callback({ text: `Failed to fetch: ${message}`, actions: [] });
+        await callback({ text: `Failed to fetch: ${displayMsg}`, actions: [] });
       }
-      return { success: false, error: message };
+      return { success: false, error: displayMsg };
+    } finally {
+      clearTimeout(timer);
     }
   },
 

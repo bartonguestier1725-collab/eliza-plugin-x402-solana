@@ -100,11 +100,13 @@ export async function createSolanaX402Fetch(
   // 3. Convert to x402 SVM signer
   const svmSigner = toClientSvmSigner(signer);
 
-  // 4. Create x402 client and register Solana scheme with payment policy (#2 fix)
+  // 4. Create x402 client and register Solana scheme
+  //    M2 fix: Explicitly specify mainnet only to prevent devnet/testnet payments
   const client = new x402Client();
   registerExactSvmScheme(client, {
     signer: svmSigner,
     policies: [createMaxPaymentPolicy(maxPaymentUsd)],
+    networks: [SOLANA_MAINNET],
   });
 
   console.error(
