@@ -6,7 +6,7 @@
  * 1. Validates URL against domain allowlist and SSRF rules
  * 2. Makes the HTTP request
  * 3. Receives 402 Payment Required
- * 4. Signs a Solana USDC transfer
+ * 4. Signs a Solana USDC transfer (enforced by payment policy max limit)
  * 5. Retries with payment proof
  * 6. Returns the API response to the agent
  */
@@ -65,18 +65,18 @@ export const fetchX402Action: Action = {
     },
   ],
 
-  validate: async (_runtime: IAgentRuntime): Promise<boolean> => {
-    return getX402Fetch() !== null;
+  validate: async (runtime: IAgentRuntime): Promise<boolean> => {
+    return getX402Fetch(runtime) !== null;
   },
 
   handler: async (
-    _runtime: IAgentRuntime,
+    runtime: IAgentRuntime,
     _message: Memory,
     _state?: State,
     options?: HandlerOptions | Record<string, unknown>,
     callback?: HandlerCallback,
   ) => {
-    const x402Fetch = getX402Fetch();
+    const x402Fetch = getX402Fetch(runtime);
     if (!x402Fetch) {
       if (callback) {
         await callback({
@@ -87,7 +87,7 @@ export const fetchX402Action: Action = {
       return { success: false, error: "x402-solana not initialized" };
     }
 
-    // #1 fix: Extract parameters from HandlerOptions.parameters
+    // Extract parameters from HandlerOptions.parameters
     const params =
       (options as HandlerOptions)?.parameters ??
       (options as Record<string, unknown>);
@@ -100,9 +100,9 @@ export const fetchX402Action: Action = {
       return { success: false, error: "Missing url parameter" };
     }
 
-    // #2 fix: Validate URL against allowlist and SSRF rules
+    // Validate URL against allowlist and SSRF rules
     try {
-      validateUrl(url);
+      validateUrl(url, runtime);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       if (callback) {
@@ -138,19 +138,14 @@ export const fetchX402Action: Action = {
         return { success: false, error: `HTTP ${response.status}` };
       }
 
-      // Try to parse as JSON for structured response
-      let data: Record<string, string | number | boolean | null | undefined> | undefined;
+      // Parse as JSON — keep full structure (#5 fix: no flattening)
+      let data: Record<string, unknown> | undefined;
       try {
         const parsed = JSON.parse(text);
         if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-          // Flatten to string values for ProviderDataRecord compatibility
-          const flat: Record<string, string> = {};
-          for (const [k, v] of Object.entries(parsed)) {
-            flat[k] = typeof v === "string" ? v : JSON.stringify(v);
-          }
-          data = flat;
+          data = parsed as Record<string, unknown>;
         } else {
-          data = { result: JSON.stringify(parsed) };
+          data = { result: parsed };
         }
       } catch {
         data = { text: text.slice(0, 4000) };
@@ -163,8 +158,9 @@ export const fetchX402Action: Action = {
         await callback({ text: summary, actions: [] });
       }
 
-      // #5 fix: Return data in ActionResult for action chaining
-      return { success: true, data };
+      // Return data in ActionResult for action chaining.
+      // Cast to ProviderDataRecord — ProviderValue includes object/JsonValue.
+      return { success: true, data: data as Record<string, never> };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[x402-solana] Error on ${safeUrl}: ${message}`);

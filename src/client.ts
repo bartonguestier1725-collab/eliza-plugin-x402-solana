@@ -10,6 +10,7 @@ import { wrapFetchWithPayment } from "@x402/fetch";
 import { toClientSvmSigner } from "@x402/svm";
 import { registerExactSvmScheme } from "@x402/svm/exact/client";
 import { createKeyPairSignerFromBytes } from "@solana/signers";
+import { createMaxPaymentPolicy } from "./security.js";
 
 /** Solana mainnet CAIP-2 identifier */
 const SOLANA_MAINNET = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
@@ -21,7 +22,7 @@ const SOLANA_MAINNET = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
 export function decodeBase58(encoded: string): Uint8Array {
   const ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
   const BASE = 58;
-  const bytes: number[] = [0];
+  const bytes: number[] = [];
 
   for (const char of encoded) {
     const idx = ALPHABET.indexOf(char);
@@ -38,13 +39,18 @@ export function decodeBase58(encoded: string): Uint8Array {
     }
   }
 
-  // Leading '1's in base58 = leading zero bytes
+  // Count leading '1's = leading zero bytes
+  let leadingZeros = 0;
   for (const char of encoded) {
     if (char !== "1") break;
-    bytes.push(0);
+    leadingZeros++;
   }
 
-  return new Uint8Array(bytes.reverse());
+  // Reverse the computed bytes and prepend leading zeros
+  const reversed = bytes.reverse();
+  const result = new Uint8Array(leadingZeros + reversed.length);
+  result.set(reversed, leadingZeros);
+  return result;
 }
 
 /**
@@ -78,10 +84,12 @@ export function parsePrivateKey(input: string): Uint8Array {
  * Create a payment-aware fetch function for Solana x402 payments.
  *
  * @param privateKeyInput - Base58-encoded Solana keypair or JSON array
+ * @param maxPaymentUsd - Maximum payment amount in USD per request
  * @returns A fetch function that auto-handles 402 → Solana USDC payment → retry
  */
 export async function createSolanaX402Fetch(
   privateKeyInput: string,
+  maxPaymentUsd: number = 1.0,
 ): Promise<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>> {
   // 1. Parse private key (base58 or JSON array)
   const keyBytes = parsePrivateKey(privateKeyInput);
@@ -92,12 +100,15 @@ export async function createSolanaX402Fetch(
   // 3. Convert to x402 SVM signer
   const svmSigner = toClientSvmSigner(signer);
 
-  // 4. Create x402 client and register Solana scheme
+  // 4. Create x402 client and register Solana scheme with payment policy (#2 fix)
   const client = new x402Client();
-  registerExactSvmScheme(client, { signer: svmSigner });
+  registerExactSvmScheme(client, {
+    signer: svmSigner,
+    policies: [createMaxPaymentPolicy(maxPaymentUsd)],
+  });
 
   console.error(
-    `[x402-solana] Wallet: ${signer.address} on ${SOLANA_MAINNET}`,
+    `[x402-solana] Wallet: ${signer.address} on ${SOLANA_MAINNET} (max $${maxPaymentUsd}/req)`,
   );
 
   // 5. Wrap fetch with payment handling

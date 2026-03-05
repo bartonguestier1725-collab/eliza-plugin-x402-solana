@@ -10,14 +10,16 @@
 import type { Plugin, IAgentRuntime } from "@elizaos/core";
 import { fetchX402Action } from "./actions/fetch-x402.js";
 import { createSolanaX402Fetch } from "./client.js";
-import { configureSecurityPolicy } from "./security.js";
+import { configureSecurityPolicy, getMaxPaymentUsd } from "./security.js";
 
-/** Module-level x402 fetch — initialized once in plugin init. */
-let x402Fetch: ((input: RequestInfo | URL, init?: RequestInit) => Promise<Response>) | null = null;
+type X402Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-/** Get the initialized x402 fetch. Null if plugin not configured. */
-export function getX402Fetch() {
-  return x402Fetch;
+/** Per-runtime x402 fetch instances (#3 fix: no more module global) */
+const fetchMap = new WeakMap<IAgentRuntime, X402Fetch>();
+
+/** Get the initialized x402 fetch for a runtime. Null if not configured. */
+export function getX402Fetch(runtime: IAgentRuntime): X402Fetch | null {
+  return fetchMap.get(runtime) ?? null;
 }
 
 export const x402SolanaPlugin: Plugin = {
@@ -28,8 +30,8 @@ export const x402SolanaPlugin: Plugin = {
     "Solana USDC transfers and retrying. Supports all x402-enabled APIs.",
 
   init: async (pluginConfig: Record<string, string>, runtime: IAgentRuntime) => {
-    // Configure security policy from plugin config
-    configureSecurityPolicy({
+    // Configure security policy per-runtime
+    configureSecurityPolicy(runtime, {
       allowedDomains: pluginConfig.allowedDomains?.split(",").map((d) => d.trim()),
       maxPaymentUsd: pluginConfig.maxPaymentUsd
         ? parseFloat(pluginConfig.maxPaymentUsd)
@@ -46,15 +48,17 @@ export const x402SolanaPlugin: Plugin = {
         "[x402-solana] No SOLANA_PRIVATE_KEY or WALLET_PRIVATE_KEY found in settings. " +
           "Plugin will be inactive.",
       );
-      x402Fetch = null;
+      fetchMap.delete(runtime);
       return;
     }
 
     try {
-      x402Fetch = await createSolanaX402Fetch(String(privateKey));
+      const maxUsd = getMaxPaymentUsd(runtime);
+      const x402Fetch = await createSolanaX402Fetch(String(privateKey), maxUsd);
+      fetchMap.set(runtime, x402Fetch);
       console.error("[x402-solana] Initialized — Solana USDC payments enabled");
     } catch (err) {
-      x402Fetch = null;
+      fetchMap.delete(runtime);
       console.error("[x402-solana] Failed to initialize:", err);
     }
   },

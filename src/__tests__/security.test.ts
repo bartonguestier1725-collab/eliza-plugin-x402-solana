@@ -1,37 +1,53 @@
 /**
- * Tests for security (URL validation, SSRF protection) and base58 decoding.
+ * Tests for security (URL validation, SSRF protection, IPv6) and base58 decoding.
  *
  * Uses Node.js built-in test runner (node --test).
  */
 
-import { describe, it } from "node:test";
+import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { validateUrl, maskQueryParams, configureSecurityPolicy } from "../security.js";
+import { validateUrl, maskQueryParams, configureSecurityPolicy, createMaxPaymentPolicy } from "../security.js";
 import { decodeBase58, parsePrivateKey } from "../client.js";
 
-// --- Base58 Decoding ---
+// Minimal mock runtime for per-runtime config
+const mockRuntime = {} as Parameters<typeof configureSecurityPolicy>[0];
+
+beforeEach(() => {
+  configureSecurityPolicy(mockRuntime, {});
+});
+
+// --- Base58 Decoding (#4 fix) ---
 
 describe("decodeBase58", () => {
-  it("decodes a known Solana address correctly", () => {
-    // "1" in base58 = 0x00
+  it("decodes '1' to exactly 1 zero byte", () => {
     const result = decodeBase58("1");
-    assert.equal(result[result.length - 1], 0);
+    assert.equal(result.length, 1);
+    assert.equal(result[0], 0);
   });
 
-  it("decodes a short base58 string", () => {
-    // "2" = 1 in base58 alphabet (index 1)
+  it("decodes '11' to exactly 2 zero bytes", () => {
+    const result = decodeBase58("11");
+    assert.equal(result.length, 2);
+    assert.equal(result[0], 0);
+    assert.equal(result[1], 0);
+  });
+
+  it("decodes '2' to [1]", () => {
     const result = decodeBase58("2");
-    assert.equal(result[result.length - 1], 1);
+    assert.equal(result.length, 1);
+    assert.equal(result[0], 1);
+  });
+
+  it("decodes '1A' to [0, 9]", () => {
+    // '1' = leading zero, 'A' = index 9 in base58
+    const result = decodeBase58("1A");
+    assert.equal(result.length, 2);
+    assert.equal(result[0], 0);
+    assert.equal(result[1], 9);
   });
 
   it("throws on invalid base58 characters", () => {
     assert.throws(() => decodeBase58("0OIl"), /Invalid base58 character/);
-  });
-
-  it("handles leading 1s as zero bytes", () => {
-    const result = decodeBase58("111");
-    // Three leading 1s = at least 3 bytes, all zero-related
-    assert.ok(result.length >= 3);
   });
 });
 
@@ -51,7 +67,6 @@ describe("parsePrivateKey", () => {
   });
 
   it("rejects non-array JSON (object with { triggers base58 error)", () => {
-    // { is not a valid base58 char, and parsePrivateKey only tries JSON for inputs starting with [
     assert.throws(() => parsePrivateKey('{"key": "value"}'), /Invalid base58 character/);
   });
 
@@ -62,7 +77,6 @@ describe("parsePrivateKey", () => {
   });
 
   it("falls back to base58 for non-JSON input", () => {
-    // This should not throw — it's treated as base58
     const result = parsePrivateKey("2");
     assert.ok(result.length > 0);
   });
@@ -72,49 +86,112 @@ describe("parsePrivateKey", () => {
 
 describe("validateUrl", () => {
   it("allows known hugen.tokyo domains", () => {
-    configureSecurityPolicy({});
-    assert.doesNotThrow(() => validateUrl("https://scout.hugen.tokyo/scout/hn?q=test"));
-    assert.doesNotThrow(() => validateUrl("https://defi.hugen.tokyo/defi/token?chain=1"));
-    assert.doesNotThrow(() => validateUrl("https://intel.hugen.tokyo/intel/token-report"));
+    configureSecurityPolicy(mockRuntime, {});
+    assert.doesNotThrow(() => validateUrl("https://scout.hugen.tokyo/scout/hn?q=test", mockRuntime));
+    assert.doesNotThrow(() => validateUrl("https://defi.hugen.tokyo/defi/token?chain=1", mockRuntime));
+    assert.doesNotThrow(() => validateUrl("https://intel.hugen.tokyo/intel/token-report", mockRuntime));
   });
 
   it("blocks unknown domains by default", () => {
-    configureSecurityPolicy({});
-    assert.throws(() => validateUrl("https://evil.com/steal"), /not in allowlist/);
+    configureSecurityPolicy(mockRuntime, {});
+    assert.throws(() => validateUrl("https://evil.com/steal", mockRuntime), /not in allowlist/);
   });
 
   it("blocks HTTP (non-HTTPS)", () => {
-    configureSecurityPolicy({});
-    assert.throws(() => validateUrl("http://scout.hugen.tokyo/scout/hn"), /Only HTTPS/);
+    configureSecurityPolicy(mockRuntime, {});
+    assert.throws(() => validateUrl("http://scout.hugen.tokyo/scout/hn", mockRuntime), /Only HTTPS/);
   });
 
-  it("blocks private IPs", () => {
-    configureSecurityPolicy({ allowAnyDomain: true });
-    assert.throws(() => validateUrl("https://127.0.0.1/admin"), /private.*internal/i);
-    assert.throws(() => validateUrl("https://10.0.0.1/secret"), /private.*internal/i);
-    assert.throws(() => validateUrl("https://192.168.1.1/api"), /private.*internal/i);
-    assert.throws(() => validateUrl("https://172.16.0.1/api"), /private.*internal/i);
+  it("blocks private IPv4 addresses", () => {
+    configureSecurityPolicy(mockRuntime, { allowAnyDomain: true });
+    assert.throws(() => validateUrl("https://127.0.0.1/admin", mockRuntime), /private.*internal/i);
+    assert.throws(() => validateUrl("https://10.0.0.1/secret", mockRuntime), /private.*internal/i);
+    assert.throws(() => validateUrl("https://192.168.1.1/api", mockRuntime), /private.*internal/i);
+    assert.throws(() => validateUrl("https://172.16.0.1/api", mockRuntime), /private.*internal/i);
   });
 
   it("blocks localhost", () => {
-    configureSecurityPolicy({ allowAnyDomain: true });
-    assert.throws(() => validateUrl("https://localhost/api"), /private.*internal/i);
+    configureSecurityPolicy(mockRuntime, { allowAnyDomain: true });
+    assert.throws(() => validateUrl("https://localhost/api", mockRuntime), /private.*internal/i);
+  });
+
+  // #1 fix: IPv6 SSRF
+  it("blocks IPv6 loopback [::1]", () => {
+    configureSecurityPolicy(mockRuntime, { allowAnyDomain: true });
+    assert.throws(() => validateUrl("https://[::1]/admin", mockRuntime), /private.*internal/i);
+  });
+
+  it("blocks IPv6 link-local [fe80::]", () => {
+    configureSecurityPolicy(mockRuntime, { allowAnyDomain: true });
+    assert.throws(() => validateUrl("https://[fe80::1]/api", mockRuntime), /private.*internal/i);
+  });
+
+  it("blocks IPv6 ULA [fc00::]", () => {
+    configureSecurityPolicy(mockRuntime, { allowAnyDomain: true });
+    assert.throws(() => validateUrl("https://[fc00::1]/api", mockRuntime), /private.*internal/i);
+  });
+
+  it("blocks IPv4-mapped IPv6 [::ffff:169.254.169.254] (cloud metadata)", () => {
+    configureSecurityPolicy(mockRuntime, { allowAnyDomain: true });
+    assert.throws(() => validateUrl("https://[::ffff:169.254.169.254]/metadata", mockRuntime), /private.*internal/i);
+  });
+
+  it("blocks IPv4-mapped IPv6 [::ffff:127.0.0.1]", () => {
+    configureSecurityPolicy(mockRuntime, { allowAnyDomain: true });
+    assert.throws(() => validateUrl("https://[::ffff:127.0.0.1]/admin", mockRuntime), /private.*internal/i);
+  });
+
+  it("blocks IPv4-mapped IPv6 [::ffff:10.0.0.1]", () => {
+    configureSecurityPolicy(mockRuntime, { allowAnyDomain: true });
+    assert.throws(() => validateUrl("https://[::ffff:10.0.0.1]/secret", mockRuntime), /private.*internal/i);
   });
 
   it("allows custom domain allowlist", () => {
-    configureSecurityPolicy({ allowedDomains: ["api.example.com"] });
-    assert.doesNotThrow(() => validateUrl("https://api.example.com/data"));
-    assert.throws(() => validateUrl("https://scout.hugen.tokyo/scout/hn"), /not in allowlist/);
+    configureSecurityPolicy(mockRuntime, { allowedDomains: ["api.example.com"] });
+    assert.doesNotThrow(() => validateUrl("https://api.example.com/data", mockRuntime));
+    assert.throws(() => validateUrl("https://scout.hugen.tokyo/scout/hn", mockRuntime), /not in allowlist/);
   });
 
   it("allows any domain when configured", () => {
-    configureSecurityPolicy({ allowAnyDomain: true });
-    assert.doesNotThrow(() => validateUrl("https://any-public-api.com/endpoint"));
+    configureSecurityPolicy(mockRuntime, { allowAnyDomain: true });
+    assert.doesNotThrow(() => validateUrl("https://any-public-api.com/endpoint", mockRuntime));
   });
 
   it("rejects invalid URLs", () => {
-    configureSecurityPolicy({});
-    assert.throws(() => validateUrl("not-a-url"), /Invalid URL/);
+    configureSecurityPolicy(mockRuntime, {});
+    assert.throws(() => validateUrl("not-a-url", mockRuntime), /Invalid URL/);
+  });
+});
+
+// --- Payment Policy (#2 fix) ---
+
+describe("createMaxPaymentPolicy", () => {
+  it("allows payments under the limit", () => {
+    const policy = createMaxPaymentPolicy(1.0); // $1.00
+    const requirements = [{ amount: "500000", scheme: "exact", network: "solana:mainnet" }]; // $0.50
+    const filtered = policy(2, requirements as never[]);
+    assert.equal(filtered.length, 1);
+  });
+
+  it("rejects payments over the limit", () => {
+    const policy = createMaxPaymentPolicy(1.0); // $1.00
+    const requirements = [{ amount: "2000000", scheme: "exact", network: "solana:mainnet" }]; // $2.00
+    const filtered = policy(2, requirements as never[]);
+    assert.equal(filtered.length, 0);
+  });
+
+  it("allows exactly the limit", () => {
+    const policy = createMaxPaymentPolicy(0.50); // $0.50
+    const requirements = [{ amount: "500000", scheme: "exact", network: "solana:mainnet" }]; // $0.50
+    const filtered = policy(2, requirements as never[]);
+    assert.equal(filtered.length, 1);
+  });
+
+  it("handles invalid amount strings", () => {
+    const policy = createMaxPaymentPolicy(1.0);
+    const requirements = [{ amount: "not-a-number", scheme: "exact" }];
+    const filtered = policy(2, requirements as never[]);
+    assert.equal(filtered.length, 0);
   });
 });
 
