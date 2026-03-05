@@ -3,22 +3,25 @@
  *
  * When the agent needs data from a paid API (scout intelligence, DeFi data,
  * domain analysis, etc.), this action handles the x402 payment flow:
- * 1. Makes the HTTP request
- * 2. Receives 402 Payment Required
- * 3. Signs a Solana USDC transfer
- * 4. Retries with payment proof
- * 5. Returns the API response to the agent
+ * 1. Validates URL against domain allowlist and SSRF rules
+ * 2. Makes the HTTP request
+ * 3. Receives 402 Payment Required
+ * 4. Signs a Solana USDC transfer
+ * 5. Retries with payment proof
+ * 6. Returns the API response to the agent
  */
 
 import type {
   Action,
   ActionExample,
   HandlerCallback,
+  HandlerOptions,
   IAgentRuntime,
   Memory,
   State,
 } from "@elizaos/core";
 import { getX402Fetch } from "../index.js";
+import { validateUrl, maskQueryParams } from "../security.js";
 
 export const fetchX402Action: Action = {
   name: "FETCH_X402_SOLANA",
@@ -70,7 +73,7 @@ export const fetchX402Action: Action = {
     _runtime: IAgentRuntime,
     _message: Memory,
     _state?: State,
-    options?: Record<string, unknown>,
+    options?: HandlerOptions | Record<string, unknown>,
     callback?: HandlerCallback,
   ) => {
     const x402Fetch = getX402Fetch();
@@ -84,7 +87,12 @@ export const fetchX402Action: Action = {
       return { success: false, error: "x402-solana not initialized" };
     }
 
-    const url = options?.url as string;
+    // #1 fix: Extract parameters from HandlerOptions.parameters
+    const params =
+      (options as HandlerOptions)?.parameters ??
+      (options as Record<string, unknown>);
+    const url = params?.url as string | undefined;
+
     if (!url) {
       if (callback) {
         await callback({ text: "No URL provided for the API request.", actions: [] });
@@ -92,11 +100,23 @@ export const fetchX402Action: Action = {
       return { success: false, error: "Missing url parameter" };
     }
 
-    const method = ((options?.method as string) || "GET").toUpperCase();
-    const body = options?.body as string | undefined;
+    // #2 fix: Validate URL against allowlist and SSRF rules
+    try {
+      validateUrl(url);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      if (callback) {
+        await callback({ text: `URL blocked: ${reason}`, actions: [] });
+      }
+      return { success: false, error: reason };
+    }
+
+    const method = ((params?.method as string) || "GET").toUpperCase();
+    const body = params?.body as string | undefined;
+    const safeUrl = maskQueryParams(url);
 
     try {
-      console.error(`[x402-solana] ${method} ${url}`);
+      console.error(`[x402-solana] ${method} ${safeUrl}`);
 
       const init: RequestInit = { method };
       if (body && (method === "POST" || method === "PUT")) {
@@ -108,7 +128,7 @@ export const fetchX402Action: Action = {
       const text = await response.text();
 
       if (!response.ok) {
-        console.error(`[x402-solana] Response ${response.status}: ${text.slice(0, 200)}`);
+        console.error(`[x402-solana] ${safeUrl} → ${response.status}`);
         if (callback) {
           await callback({
             text: `API returned status ${response.status}: ${text.slice(0, 500)}`,
@@ -119,27 +139,35 @@ export const fetchX402Action: Action = {
       }
 
       // Try to parse as JSON for structured response
-      let data: unknown;
+      let data: Record<string, string | number | boolean | null | undefined> | undefined;
       try {
-        data = JSON.parse(text);
+        const parsed = JSON.parse(text);
+        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+          // Flatten to string values for ProviderDataRecord compatibility
+          const flat: Record<string, string> = {};
+          for (const [k, v] of Object.entries(parsed)) {
+            flat[k] = typeof v === "string" ? v : JSON.stringify(v);
+          }
+          data = flat;
+        } else {
+          data = { result: JSON.stringify(parsed) };
+        }
       } catch {
-        data = text;
+        data = { text: text.slice(0, 4000) };
       }
 
-      console.error(`[x402-solana] Success: ${url} (${text.length} bytes)`);
+      console.error(`[x402-solana] OK ${safeUrl} (${text.length}B)`);
 
       if (callback) {
-        const summary =
-          typeof data === "object" && data !== null
-            ? JSON.stringify(data, null, 2).slice(0, 2000)
-            : String(data).slice(0, 2000);
+        const summary = JSON.stringify(data, null, 2).slice(0, 2000);
         await callback({ text: summary, actions: [] });
       }
 
-      return { success: true };
+      // #5 fix: Return data in ActionResult for action chaining
+      return { success: true, data };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[x402-solana] Error: ${message}`);
+      console.error(`[x402-solana] Error on ${safeUrl}: ${message}`);
       if (callback) {
         await callback({ text: `Failed to fetch: ${message}`, actions: [] });
       }

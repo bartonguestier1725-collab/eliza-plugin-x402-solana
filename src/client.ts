@@ -7,7 +7,7 @@
 
 import { x402Client } from "@x402/fetch";
 import { wrapFetchWithPayment } from "@x402/fetch";
-import { ExactSvmScheme, toClientSvmSigner } from "@x402/svm";
+import { toClientSvmSigner } from "@x402/svm";
 import { registerExactSvmScheme } from "@x402/svm/exact/client";
 import { createKeyPairSignerFromBytes } from "@solana/signers";
 
@@ -18,7 +18,7 @@ const SOLANA_MAINNET = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
  * Decode a base58-encoded Solana keypair to Uint8Array.
  * Solana CLI keypairs are 64 bytes: [32-byte private key | 32-byte public key].
  */
-function decodeBase58(encoded: string): Uint8Array {
+export function decodeBase58(encoded: string): Uint8Array {
   const ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
   const BASE = 58;
   const bytes: number[] = [0];
@@ -48,16 +48,43 @@ function decodeBase58(encoded: string): Uint8Array {
 }
 
 /**
+ * Parse a Solana private key from base58 string or JSON array format.
+ *
+ * Supports:
+ * - Base58 string: standard Solana wallet format (64-byte keypair)
+ * - JSON array: Solana CLI's ~/.config/solana/id.json format ([12, 34, ...])
+ */
+export function parsePrivateKey(input: string): Uint8Array {
+  const trimmed = input.trim();
+
+  // JSON array format: [12, 34, 56, ...]
+  if (trimmed.startsWith("[")) {
+    try {
+      const arr = JSON.parse(trimmed) as number[];
+      if (!Array.isArray(arr) || !arr.every((n) => typeof n === "number" && n >= 0 && n <= 255)) {
+        throw new Error("JSON array must contain numbers 0-255");
+      }
+      return new Uint8Array(arr);
+    } catch (e) {
+      throw new Error(`Invalid JSON array key format: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  // Base58 format (default)
+  return decodeBase58(trimmed);
+}
+
+/**
  * Create a payment-aware fetch function for Solana x402 payments.
  *
- * @param privateKeyBase58 - Base58-encoded Solana keypair (64 bytes)
+ * @param privateKeyInput - Base58-encoded Solana keypair or JSON array
  * @returns A fetch function that auto-handles 402 → Solana USDC payment → retry
  */
 export async function createSolanaX402Fetch(
-  privateKeyBase58: string,
+  privateKeyInput: string,
 ): Promise<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>> {
-  // 1. Decode base58 private key to bytes
-  const keyBytes = decodeBase58(privateKeyBase58.trim());
+  // 1. Parse private key (base58 or JSON array)
+  const keyBytes = parsePrivateKey(privateKeyInput);
 
   // 2. Create a KeyPairSigner from the bytes
   const signer = await createKeyPairSignerFromBytes(keyBytes);
