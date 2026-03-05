@@ -1,0 +1,37 @@
+{
+  "name": "@hugen/plugin-x402-solana",
+  "version": "0.1.0",
+  "description": "Solana USDC payments for ElizaOS agents via x402 protocol — pay for any x402-protected API with Solana",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist node_modules"
+  },
+  "dependencies": {
+    "@elizaos/core": "2.0.0-alpha.3",
+    "@x402/core": "~2.5.0",
+    "@x402/svm": "~2.5.0",
+    "@x402/fetch": "~2.5.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^22.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "agentConfig": {
+    "pluginType": "elizaos:plugin:1.0.0"
+  }
+}
