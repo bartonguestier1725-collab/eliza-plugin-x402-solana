@@ -11,16 +11,10 @@ import type { Plugin, IAgentRuntime } from "@elizaos/core";
 import { fetchX402Action } from "./actions/fetch-x402.js";
 import { createSolanaX402Fetch } from "./client.js";
 import { configureSecurityPolicy, getMaxPaymentUsd } from "./security.js";
+import { setX402Fetch, deleteX402Fetch } from "./state.js";
 
-type X402Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-/** Per-runtime x402 fetch instances */
-const fetchMap = new WeakMap<IAgentRuntime, X402Fetch>();
-
-/** Get the initialized x402 fetch for a runtime. Null if not configured. */
-export function getX402Fetch(runtime: IAgentRuntime): X402Fetch | null {
-  return fetchMap.get(runtime) ?? null;
-}
+// Re-export for external consumers
+export { getX402Fetch } from "./state.js";
 
 export const x402SolanaPlugin: Plugin = {
   name: "x402-solana",
@@ -51,17 +45,17 @@ export const x402SolanaPlugin: Plugin = {
         "[x402-solana] No SOLANA_PRIVATE_KEY or WALLET_PRIVATE_KEY found in settings. " +
           "Plugin will be inactive.",
       );
-      fetchMap.delete(runtime);
+      deleteX402Fetch(runtime);
       return;
     }
 
     try {
       const maxUsd = getMaxPaymentUsd(runtime);
       const x402Fetch = await createSolanaX402Fetch(String(privateKey), maxUsd);
-      fetchMap.set(runtime, x402Fetch);
+      setX402Fetch(runtime, x402Fetch);
       console.error("[x402-solana] Initialized — Solana USDC payments enabled");
     } catch (err) {
-      fetchMap.delete(runtime);
+      deleteX402Fetch(runtime);
       console.error("[x402-solana] Failed to initialize:", err);
     }
   },

@@ -4,9 +4,9 @@
  * When the agent needs data from a paid API (scout intelligence, DeFi data,
  * domain analysis, etc.), this action handles the x402 payment flow:
  * 1. Validates URL against domain allowlist and SSRF rules
- * 2. Makes the HTTP request (with timeout)
+ * 2. Makes the HTTP request (with timeout, no redirects)
  * 3. Receives 402 Payment Required
- * 4. Signs a Solana USDC transfer (enforced by payment policy max limit)
+ * 4. Signs a Solana USDC transfer (enforced by payment policy: USDC only + max limit)
  * 5. Retries with payment proof
  * 6. Returns the API response to the agent
  */
@@ -20,11 +20,54 @@ import type {
   Memory,
   State,
 } from "@elizaos/core";
-import { getX402Fetch } from "../index.js";
+import { getX402Fetch } from "../state.js";
 import { validateUrl, maskQueryParams, getFetchTimeoutMs } from "../security.js";
 
-/** Max response body size (4 MB). Prevents OOM on large payloads like base64 images. */
+/** Max response body size (4 MB). */
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Read response body with streaming size enforcement.
+ * Prevents OOM from servers that lie about Content-Length or omit it.
+ */
+async function readBodySafe(response: Response, maxBytes: number): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    // Fallback for environments without ReadableStream
+    const text = await response.text();
+    if (text.length > maxBytes) {
+      throw new Error(`Response body exceeds ${maxBytes} bytes`);
+    }
+    return text;
+  }
+
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  const decoder = new TextDecoder();
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.length;
+      if (totalBytes > maxBytes) {
+        reader.cancel();
+        throw new Error(`Response body exceeds ${maxBytes} bytes`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  // Decode all chunks
+  let text = "";
+  for (let i = 0; i < chunks.length; i++) {
+    text += decoder.decode(chunks[i], { stream: i < chunks.length - 1 });
+  }
+  text += decoder.decode();
+  return text;
+}
 
 export const fetchX402Action: Action = {
   name: "FETCH_X402_SOLANA",
@@ -118,7 +161,7 @@ export const fetchX402Action: Action = {
     const body = params?.body as string | undefined;
     const safeUrl = maskQueryParams(url);
 
-    // H2 fix: Timeout via AbortController
+    // Timeout via AbortController
     const timeoutMs = getFetchTimeoutMs(runtime);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -126,7 +169,12 @@ export const fetchX402Action: Action = {
     try {
       console.error(`[x402-solana] ${method} ${safeUrl}`);
 
-      const init: RequestInit = { method, signal: controller.signal };
+      const init: RequestInit = {
+        method,
+        signal: controller.signal,
+        // R1-2 fix: Block redirects to prevent allowlist bypass via 302/307
+        redirect: "error",
+      };
       if (body && (method === "POST" || method === "PUT")) {
         init.body = body;
         init.headers = { "Content-Type": "application/json" };
@@ -134,17 +182,8 @@ export const fetchX402Action: Action = {
 
       const response = await x402Fetch(url, init);
 
-      // L3 fix: Check Content-Length before reading body
-      const contentLength = parseInt(response.headers.get("content-length") ?? "0", 10);
-      if (contentLength > MAX_RESPONSE_BYTES) {
-        console.error(`[x402-solana] Response too large: ${contentLength} bytes`);
-        if (callback) {
-          await callback({ text: `Response too large (${contentLength} bytes, max ${MAX_RESPONSE_BYTES})`, actions: [] });
-        }
-        return { success: false, error: "Response too large" };
-      }
-
-      const text = await response.text();
+      // R2-① fix: Streaming body reader with actual byte limit (not trusting Content-Length)
+      const text = await readBodySafe(response, MAX_RESPONSE_BYTES);
 
       if (!response.ok) {
         console.error(`[x402-solana] ${safeUrl} → ${response.status}`);
@@ -177,12 +216,19 @@ export const fetchX402Action: Action = {
         await callback({ text: summary, actions: [] });
       }
 
-      // M3 fix: proper cast via unknown to ProviderDataRecord
       return { success: true, data: data as unknown as Record<string, never> };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const isTimeout = err instanceof DOMException && err.name === "AbortError";
-      const displayMsg = isTimeout ? `Request timed out after ${timeoutMs}ms` : message;
+      const isRedirect = message.includes("redirect");
+      let displayMsg: string;
+      if (isTimeout) {
+        displayMsg = `Request timed out after ${timeoutMs}ms`;
+      } else if (isRedirect) {
+        displayMsg = `Request was redirected (blocked for security): ${safeUrl}`;
+      } else {
+        displayMsg = message;
+      }
       console.error(`[x402-solana] Error on ${safeUrl}: ${displayMsg}`);
       if (callback) {
         await callback({ text: `Failed to fetch: ${displayMsg}`, actions: [] });

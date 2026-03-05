@@ -150,17 +150,25 @@ export function getFetchTimeoutMs(runtime?: IAgentRuntime): number {
   return getConfig(runtime).fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
 }
 
+/** USDC mint address on Solana mainnet. */
+const USDC_SOLANA_MAINNET = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
 /**
- * Create a PaymentPolicy that rejects payments above a USD threshold.
+ * Create a PaymentPolicy that:
+ * 1. Only allows USDC payments (rejects other SPL tokens)
+ * 2. Rejects payments above a USD threshold
+ *
  * USDC has 6 decimals: $1.00 = "1000000".
  */
 export function createMaxPaymentPolicy(maxUsd: number): PaymentPolicy {
-  // H1 fix: Math.round instead of Math.floor to avoid floating point truncation
-  // e.g. 0.005 * 1_000_000 = 4999.999... → Math.round = 5000 (correct)
   const maxBaseUnits = BigInt(Math.round(maxUsd * 1_000_000));
   return (_version: number, requirements: PaymentRequirements[]): PaymentRequirements[] => {
     return requirements.filter((r) => {
       try {
+        // R1-1 fix: Only allow USDC payments — reject other SPL tokens
+        if (r.asset && r.asset !== USDC_SOLANA_MAINNET) {
+          return false;
+        }
         return BigInt(r.amount) <= maxBaseUnits;
       } catch {
         return false;
