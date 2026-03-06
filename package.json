@@ -38,6 +38,12 @@
     "access": "public"
   },
   "agentConfig": {
-    "pluginType": "elizaos:plugin:1.0.0"
+    "pluginType": "elizaos:plugin:1.0.0",
+    "pluginParameters": {
+      "SOLANA_PRIVATE_KEY": {
+        "type": "string",
+        "description": "Solana wallet private key (base58, hex, or JSON array format)"
+      }
+    }
   }
 }
