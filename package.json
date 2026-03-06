@@ -1,6 +1,6 @@
 {
   "name": "@hugen/plugin-x402-solana",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Solana USDC payments for ElizaOS agents via x402 protocol — pay for any x402-protected API with Solana",
   "type": "module",
   "main": "dist/index.js",
